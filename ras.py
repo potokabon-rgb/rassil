@@ -22,24 +22,22 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - [%(levelname)s] - %(message)s",
 )
-logger = logging.getLogger("UltraFlexibleRassilBot")
+logger = logging.getLogger("CommandRassilBot")
 
-# Конфигурация из ТЗ
 BOT_TOKEN = "8954398769:AAFn2uMSdK_YBMZwIHboSdwfcj43Z0zXHDk"
 API_ID = 30774866
 API_HASH = "fd176053cf8817de383edb515f74cb59"
 SESSION_NAME = "rassilbot"
-DB_NAME = "ultra_broadcast.db"
+DB_NAME = "command_broadcast.db"
 
 bot = Bot(token=BOT_TOKEN)
 router = Router()
 userbot = TelegramClient(SESSION_NAME, API_ID, API_HASH)
 
-# Глобальный флаг для возможности экстренной остановки рассылки
 ACTIVE_BROADCAST = {"is_running": False}
 
 
-# --- БАЗА ДАННЫХ И НАСТРОЙКИ ---
+# --- БД И НАСТРОЙКИ ---
 async def init_db():
   async with aiosqlite.connect(DB_NAME) as db:
     await db.execute("""
@@ -53,17 +51,15 @@ async def init_db():
                 target TEXT PRIMARY KEY
             )
         """)
-    # Дефолтные ультра-настройки
-    default_settings = {
-        "delay_min": "7",  # Мин. задержка между сообщениями (сек)
-        "delay_max": "15",  # Макс. задержка между сообщениями (сек)
-        "batch_size": "20",  # Размер пачки сообщений перед большим перерывом
-        "batch_pause": "60",  # Большой перерыв после пачки (сек)
-        "parse_mode": "html",  # html, markdown или off
-        "typing_action": "1",  # 1 - имитировать "печатает...", 0 - выкл
-        "skip_duplicates": "1",  # 1 - пропускать дубликаты/ошибочные
+    defaults = {
+        "delay_min": "7",
+        "delay_max": "15",
+        "batch_size": "20",
+        "batch_pause": "60",
+        "parse_mode": "html",
+        "typing_action": "1",
     }
-    for k, v in default_settings.items():
+    for k, v in defaults.items():
       await db.execute(
           "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (k, v)
       )
@@ -76,8 +72,10 @@ class BroadcastStates(StatesGroup):
   waiting_for_targets = State()
 
 
-class SettingsStates(StatesGroup):
-  waiting_for_value = State()
+class AuthStates(StatesGroup):
+  waiting_for_phone = State()
+  waiting_for_code = State()
+  waiting_for_password = State()
 
 
 class BlacklistStates(StatesGroup):
@@ -85,7 +83,7 @@ class BlacklistStates(StatesGroup):
   waiting_for_remove = State()
 
 
-# --- РАНДОМИЗАЦИЯ (СПЛАЙСИНГ) ---
+# --- РАНДОМИЗАЦИЯ ТЕКСТА ---
 def spin_text(text: str) -> str:
   import re
 
@@ -104,275 +102,323 @@ def main_menu_kb():
       keyboard=[
           [
               KeyboardButton(text="🚀 Запустить рассылку"),
-              KeyboardButton(text="🛑 Стоп рассылка"),
+              KeyboardButton(text="🛑 Стоп"),
           ],
           [
-              KeyboardButton(text="⚙️ Гибкие настройки"),
+              KeyboardButton(text="📱 Подключить аккаунт"),
+              KeyboardButton(text="⚙️ Статус настроек"),
+          ],
+          [
               KeyboardButton(text="🚫 Черный список"),
+              KeyboardButton(text="📋 Список команд"),
           ],
       ],
       resize_keyboard=True,
   )
 
 
-async def get_settings_keyboard():
-  async with aiosqlite.connect(DB_NAME) as db:
-    async with db.execute("SELECT key, value FROM settings") as cursor:
-      st = {row[0]: row[1] for row in (await cursor.fetchall())}
-
-  kb = InlineKeyboardMarkup(
-      inline_keyboard=[
-          [
-              InlineKeyboardButton(
-                  text=f"⏱ Пауза мин: {st.get('delay_min')}с",
-                  callback_data="set_delay_min",
-              ),
-              InlineKeyboardButton(
-                  text=f"⏱ Пауза макс: {st.get('delay_max')}с",
-                  callback_data="set_delay_max",
-              ),
-          ],
-          [
-              InlineKeyboardButton(
-                  text=f"📦 Размер пачки: {st.get('batch_size')} шт.",
-                  callback_data="set_batch_size",
-              ),
-              InlineKeyboardButton(
-                  text=f"☕️ Пауза пачки: {st.get('batch_pause')}с",
-                  callback_data="set_batch_pause",
-              ),
-          ],
-          [
-              InlineKeyboardButton(
-                  text=(
-                      "📝 Режим текста:"
-                      f" {st.get('parse_mode').upper()}"
-                  ),
-                  callback_data="toggle_parse_mode",
-              ),
-              InlineKeyboardButton(
-                  text=(
-                      "✍️ Имитация ввода:"
-                      f" {'Вкл ✅' if st.get('typing_action') == '1' else 'Выкл ❌'}"
-                  ),
-                  callback_data="toggle_typing",
-              ),
-          ],
-      ]
-  )
-  return kb
-
-
-# --- ОБРАБОТЧИКИ ---
+# --- СТАРТ И МЕНЮ ---
 @router.message(CommandStart())
 async def cmd_start(message: Message):
   await message.answer(
       f"Привет, {html.bold(message.from_user.full_name)}!\n"
-      "🔥 Ультрагибкая система рассылок через Userbot готова к работе.\n"
-      "Настраивай параметры в меню ниже:",
+      "🤖 Профессиональная система авто-рассылки активирована.\n"
+      "Управляйте настройками через команды в чате или кнопки ниже.",
       reply_markup=main_menu_kb(),
   )
 
 
-@router.message(F.text == "⚙️ Гибкие настройки")
-async def show_settings(message: Message):
-  kb = await get_settings_keyboard()
+@router.message(F.text == "📋 Список команд")
+async def cmd_list_help(message: Message):
   await message.answer(
-      "⚙️ <b>Панель ультрагибкой настройки рассылки:</b>\n\n"
-      "• <b>Паузы:</b> рандомный интервал между отправкой сообщений.\n"
-      "• <b>Пачки:</b> бот делает большой перерыв после отправки N сообщений (для защиты от FloodWait).\n"
-      "• <b>Имитация ввода:</b> бот перед отправкой показывает статус «печатает...».\n"
-      "• <b>Рандомизация:</b> текст `{Привет|Здорово}` меняется индивидуально для каждого получателя.",
-      reply_markup=kb,
+      "📋 <b>СПИСОК ВСЕХ КОМАНД УПРАВЛЕНИЯ РАССЫЛКОЙ:</b>\n\n"
+      "🔹 <code>/set_delay_min [сек]</code> — Установить минимальную паузу\n"
+      "🔹 <code>/set_delay_max [сек]</code> — Установить максимальную паузу\n"
+      "🔹 <code>/set_batch_size [число]</code> — Размер пачки сообщений\n"
+      "🔹 <code>/set_batch_pause [сек]</code> — Пауза после отправки пачки\n"
+      "🔹 <code>/set_parse [html/markdown/off]</code> — Режим форматирования\n"
+      "🔹 <code>/set_typing [1/0]</code> — Имитация набора текста\n"
+      "🔹 <code>/settings</code> — Посмотреть текущие настройки\n"
+      "🔹 <code>/connect</code> — Подключить аккаунт (ввод телефона/кода)\n"
+      "🔹 <code>/blacklist</code> — Показать черный список\n"
+      "🔹 <code>/stop</code> — Экстренно остановить рассылку",
+      reply_markup=main_menu_kb(),
   )
 
 
-@router.callback_query(F.data.startswith("set_") | F.data.startswith("toggle_"))
-async def process_settings_callback(callback: CallbackQuery, state: FSMContext):
-  action = callback.data
+# --- АВТОРИЗАЦИЯ АККАУНТА («ПОДКЛЮЧИТЬ») ---
+@router.message(F.text == "📱 Подключить аккаунт")
+@router.message(Command("connect"))
+async def start_auth(message: Message, state: FSMContext):
+  if userbot.is_connected():
+    try:
+      me = await userbot.get_me()
+      if me:
+        await message.answer(
+            f"ℹ️ Аккаунт уже подключен:\n👤 <b>{me.first_name}</b> (@{me.username})"
+        )
+        return
+    except Exception:
+      pass
 
-  if action == "toggle_parse_mode":
-    async with aiosqlite.connect(DB_NAME) as db:
-      async with db.execute(
-          "SELECT value FROM settings WHERE key='parse_mode'"
-      ) as cursor:
-        cur_mode = (await cursor.fetchone())[0]
-      new_mode = "markdown" if cur_mode == "html" else ("off" if cur_mode == "markdown" else "html")
-      await db.execute(
-          "UPDATE settings SET value = ? WHERE key = 'parse_mode'",
-          (new_mode,),
-      )
-      await db.commit()
-    kb = await get_settings_keyboard()
-    await callback.message.edit_reply_markup(reply_markup=kb)
-    await callback.answer(f"Режим изменен на: {new_mode.upper()}")
+  await state.set_state(AuthStates.waiting_for_phone)
+  await message.answer(
+      "📱 <b>Авторизация Userbot</b>\n\nВведите номер телефона аккаунта в международном формате (например, <code>+79991234567</code>):"
+  )
 
-  elif action == "toggle_typing":
-    async with aiosqlite.connect(DB_NAME) as db:
-      async with db.execute(
-          "SELECT value FROM settings WHERE key='typing_action'"
-      ) as cursor:
-        cur = (await cursor.fetchone())[0]
-      new_val = "0" if cur == "1" else "1"
-      await db.execute(
-          "UPDATE settings SET value = ? WHERE key = 'typing_action'",
-          (new_val,),
-      )
-      await db.commit()
-    kb = await get_settings_keyboard()
-    await callback.message.edit_reply_markup(reply_markup=kb)
-    await callback.answer("Статус имитации изменен!")
 
-  else:
-    # Запрос числовых параметров через FSM
-    setting_key = action.replace("set_", "")
-    await state.update_data(setting_key=setting_key)
-    await state.set_state(SettingsStates.waiting_for_value)
-    param_names = {
-        "delay_min": "минимальную задержку (в секундах)",
-        "delay_max": "максимальную задержку (в секундах)",
-        "batch_size": "размер пачки сообщений (количество)",
-        "batch_pause": "паузу после пачки (в секундах)",
-    }
-    await callback.message.answer(
-        f"Введи новое целое число для параметра: <b>{param_names.get(setting_key, setting_key)}</b>"
+@router.message(AuthStates.waiting_for_phone)
+async def process_phone(message: Message, state: FSMContext):
+  phone = message.text.strip()
+  await state.update_data(phone=phone)
+  try:
+    if not userbot.is_connected():
+      await userbot.connect()
+    result = await userbot.send_code_request(phone)
+    await state.update_data(phone_code_hash=result.phone_code_hash)
+    await state.set_state(AuthStates.waiting_for_code)
+    await message.answer(
+        "✅ Код подтверждения отправлен в ваш Telegram!\nВведите полученный код цифрами:"
     )
-    await callback.answer()
+  except Exception as e:
+    await state.clear()
+    await message.answer(f"❌ Ошибка отправки кода: {e}")
 
 
-@router.message(SettingsStates.waiting_for_value)
-async def save_new_setting_value(message: Message, state: FSMContext):
-  if not message.text.isdigit():
-    await message.answer("Ошибка! Введи корректное целое число.")
-    return
-
+@router.message(AuthStates.waiting_for_code)
+async def process_code(message: Message, state: FSMContext):
+  code = message.text.strip()
   data = await state.get_data()
-  key = data.get("setting_key")
-  val = message.text
+  phone = data.get("phone")
+  phone_code_hash = data.get("phone_code_hash")
 
+  try:
+    await userbot.sign_in(phone=phone, code=code, phone_code_hash=phone_code_hash)
+    await state.clear()
+    me = await userbot.get_me()
+    await message.answer(
+        f"🎉 <b>Успешная авторизация!</b>\nАккаунт <b>{me.first_name}</b> (@{me.username}) успешно подключен.",
+        reply_markup=main_menu_kb(),
+    )
+  except errors.SessionPasswordNeededError:
+    await state.set_state(AuthStates.waiting_for_password)
+    await message.answer(
+        "🔐 На аккаунте включена двухэтапная аутентификация (облачный пароль).\nВведите ваш пароль:"
+    )
+  except Exception as e:
+    await state.clear()
+    await message.answer(f"❌ Ошибка входа: {e}")
+
+
+@router.message(AuthStates.waiting_for_password)
+async def process_password(message: Message, state: FSMContext):
+  password = message.text.strip()
+  try:
+    await userbot.sign_in(password=password)
+    await state.clear()
+    me = await userbot.get_me()
+    await message.answer(
+        f"🎉 <b>Успешная авторизация с 2FA!</b>\nАккаунт <b>{me.first_name}</b> подключен.",
+        reply_markup=main_menu_kb(),
+    )
+  except Exception as e:
+    await state.clear()
+    await message.answer(f"❌ Ошибка ввода пароля: {e}")
+
+
+# --- КОМАНДЫ НАСТРОЙКИ В ЧАТЕ ---
+@router.message(Command("settings"))
+@router.message(F.text == "⚙️ Статус настроек")
+async def cmd_show_settings(message: Message):
   async with aiosqlite.connect(DB_NAME) as db:
-    await db.execute("UPDATE settings SET value = ? WHERE key = ?", (val, key))
-    await db.commit()
+    async with db.execute("SELECT key, value FROM settings") as cursor:
+      st = {row[0]: row[1] for row in (await cursor.fetchall())}
 
-  await state.clear()
-  kb = await get_settings_keyboard()
   await message.answer(
-      f"✅ Параметр успешно обновлен на <b>{val}</b>!", reply_markup=main_menu_kb()
+      f"⚙️ <b>Текущие настройки рассылки:</b>\n\n"
+      f"⏱ Мин. пауза: <code>{st.get('delay_min')} сек.</code> (`/set_delay_min`)\n"
+      f"⏱ Макс. пауза: <code>{st.get('delay_max')} сек.</code> (`/set_delay_max`)\n"
+      f"📦 Размер пачки: <code>{st.get('batch_size')} шт.</code> (`/set_batch_size`)\n"
+      f"☕️ Пауза пачки: <code>{st.get('batch_pause')} сек.</code> (`/set_batch_pause`)\n"
+      f"📝 Формат текста: <code>{st.get('parse_mode').upper()}</code> (`/set_parse`)\n"
+      f"✍️ Имитация ввода: <code>{'Вкл' if st.get('typing_action') == '1' else 'Выкл'}</code> (`/set_typing`)",
+      reply_markup=main_menu_kb(),
   )
+
+
+@router.message(Command("set_delay_min"))
+async def cmd_set_delay_min(message: Message):
+  args = message.text.split()
+  if len(args) < 2 or not args[1].isdigit():
+    await message.answer(
+        "❌ Использование: <code>/set_delay_min 5</code> (укажите секунды)"
+    )
+    return
+  async with aiosqlite.connect(DB_NAME) as db:
+    await db.execute(
+        "UPDATE settings SET value = ? WHERE key = 'delay_min'", (args[1],)
+    )
+    await db.commit()
+  await message.answer(f"✅ Минимальная задержка изменена на {args[1]} сек.")
+
+
+@router.message(Command("set_delay_max"))
+async def cmd_set_delay_max(message: Message):
+  args = message.text.split()
+  if len(args) < 2 or not args[1].isdigit():
+    await message.answer(
+        "❌ Использование: <code>/set_delay_max 15</code> (укажите секунды)"
+    )
+    return
+  async with aiosqlite.connect(DB_NAME) as db:
+    await db.execute(
+        "UPDATE settings SET value = ? WHERE key = 'delay_max'", (args[1],)
+    )
+    await db.commit()
+  await message.answer(f"✅ Максимальная задержка изменена на {args[1]} сек.")
+
+
+@router.message(Command("set_batch_size"))
+async def cmd_set_batch_size(message: Message):
+  args = message.text.split()
+  if len(args) < 2 or not args[1].isdigit():
+    await message.answer(
+        "❌ Использование: <code>/set_batch_size 25</code> (количество)"
+    )
+    return
+  async with aiosqlite.connect(DB_NAME) as db:
+    await db.execute(
+        "UPDATE settings SET value = ? WHERE key = 'batch_size'", (args[1],)
+    )
+    await db.commit()
+  await message.answer(f"✅ Размер пачки изменен на {args[1]} сообщений.")
+
+
+@router.message(Command("set_batch_pause"))
+async def cmd_set_batch_pause(message: Message):
+  args = message.text.split()
+  if len(args) < 2 or not args[1].isdigit():
+    await message.answer(
+        "❌ Использование: <code>/set_batch_pause 60</code> (секунды)"
+    )
+    return
+  async with aiosqlite.connect(DB_NAME) as db:
+    await db.execute(
+        "UPDATE settings SET value = ? WHERE key = 'batch_pause'", (args[1],)
+    )
+    await db.commit()
+  await message.answer(f"✅ Пауза после пачки изменена на {args[1]} сек.")
+
+
+@router.message(Command("set_parse"))
+async def cmd_set_parse(message: Message):
+  args = message.text.split()
+  if len(args) < 2 or args[1].lower() not in ["html", "markdown", "off"]:
+    await message.answer("❌ Использование: <code>/set_parse html</code> (html / markdown / off)")
+    return
+  mode = args[1].lower()
+  async with aiosqlite.connect(DB_NAME) as db:
+    await db.execute(
+        "UPDATE settings SET value = ? WHERE key = 'parse_mode'", (mode,)
+    )
+    await db.commit()
+  await message.answer(f"✅ Режим форматирования изменен на: {mode.upper()}")
+
+
+@router.message(Command("set_typing"))
+async def cmd_set_typing(message: Message):
+  args = message.text.split()
+  if len(args) < 2 or args[1] not in ["1", "0"]:
+    await message.answer("❌ Использование: <code>/set_typing 1</code> (1 - вкл, 0 - выкл)")
+    return
+  async with aiosqlite.connect(DB_NAME) as db:
+    await db.execute(
+        "UPDATE settings SET value = ? WHERE key = 'typing_action'", (args[1],)
+    )
+    await db.commit()
+  await message.answer(f"✅ Имитация набора текста установлена в статус: {args[1]}")
 
 
 # --- ЧЕРНЫЙ СПИСОК ---
+@router.message(Command("blacklist"))
 @router.message(F.text == "🚫 Черный список")
-async def blacklist_menu(message: Message):
+async def show_blacklist(message: Message):
   async with aiosqlite.connect(DB_NAME) as db:
     async with db.execute("SELECT target FROM blacklist") as cursor:
       rows = await cursor.fetchall()
-  bl_list = ", ".join([r[0] for r in rows]) if rows else "Пусто"
-
-  kb = InlineKeyboardMarkup(
-      inline_keyboard=[
-          [
-              InlineKeyboardButton(
-                  text="➕ Добавить в ЧС", callback_data="bl_add"
-              ),
-              InlineKeyboardButton(
-                  text="➖ Удалить из ЧС", callback_data="bl_remove"
-              ),
-          ]
-      ]
-  )
+  bl = ", ".join([r[0] for r in rows]) if rows else "Пусто"
   await message.answer(
-      f"🚫 <b>Управление черным списком:</b>\n\nТекущие исключения: {bl_list}",
-      reply_markup=kb,
+      f"🚫 <b>Черный список исключений:</b>\n{bl}\n\nДобавить: <code>/bl_add [username]</code>\nУдалить: <code>/bl_remove [username]</code>"
   )
 
 
-@router.callback_query(F.data == "bl_add")
-async def cb_bl_add(callback: CallbackQuery, state: FSMContext):
-  await state.set_state(BlacklistStates.waiting_for_add)
-  await callback.message.answer(
-      "Отправь юзернейм или ID, который нужно добавить в черный список (можно несколько с новой строки):"
-  )
-  await callback.answer()
-
-
-@router.message(BlacklistStates.waiting_for_add)
-async def process_bl_add(message: Message, state: FSMContext):
-  targets = [t.strip() for t in message.text.split("\n") if t.strip()]
+@router.message(Command("bl_add"))
+async def cmd_bl_add(message: Message):
+  args = message.text.split(maxsplit=1)
+  if len(args) < 2:
+    await message.answer("❌ Использование: <code>/bl_add @username</code>")
+    return
+  target = args[1].strip()
   async with aiosqlite.connect(DB_NAME) as db:
-    for t in targets:
-      await db.execute(
-          "INSERT OR IGNORE INTO blacklist (target) VALUES (?)", (t,)
-      )
+    await db.execute(
+        "INSERT OR IGNORE INTO blacklist (target) VALUES (?)", (target,)
+    )
     await db.commit()
-  await state.clear()
-  await message.answer(
-      f"✅ Успешно добавлено в ЧС: {len(targets)} записей.",
-      reply_markup=main_menu_kb(),
-  )
+  await message.answer(f"✅ Пользователь <code>{target}</code> добавлен в ЧС.")
 
 
-@router.callback_query(F.data == "bl_remove")
-async def cb_bl_remove(callback: CallbackQuery, state: FSMContext):
-  await state.set_state(BlacklistStates.waiting_for_remove)
-  await callback.message.answer(
-      "Отправь юзернейм или ID для удаления из черного списка:"
-  )
-  await callback.answer()
-
-
-@router.message(BlacklistStates.waiting_for_remove)
-async def process_bl_remove(message: Message, state: FSMContext):
-  target = message.text.strip()
+@router.message(Command("bl_remove"))
+async def cmd_bl_remove(message: Message):
+  args = message.text.split(maxsplit=1)
+  if len(args) < 2:
+    await message.answer("❌ Использование: <code>/bl_remove @username</code>")
+    return
+  target = args[1].strip()
   async with aiosqlite.connect(DB_NAME) as db:
     await db.execute("DELETE FROM blacklist WHERE target = ?", (target,))
     await db.commit()
-  await state.clear()
-  await message.answer(
-      f"✅ Запись <code>{target}</code> удалена из черного списка.",
-      reply_markup=main_menu_kb(),
-  )
+  await message.answer(f"✅ Пользователь <code>{target}</code> удален из ЧС.")
 
 
-# --- ПРОЦЕСС РАССЫЛКИ ---
-@router.message(F.text == "🛑 Стоп рассылка")
+# --- РАССЫЛКА ---
+@router.message(Command("stop"))
+@router.message(F.text == "🛑 Стоп")
 async def stop_broadcast(message: Message):
   if ACTIVE_BROADCAST["is_running"]:
     ACTIVE_BROADCAST["is_running"] = False
-    await message.answer(
-        "🛑 Сигнал остановки отправлен. Рассылка завершится на текущем шаге.",
-        reply_markup=main_menu_kb(),
-    )
+    await message.answer("🛑 Сигнал остановки отправлен.")
   else:
-    await message.answer(
-        "ℹ️ Сейчас нет активных запущенных рассылок.",
-        reply_markup=main_menu_kb(),
-    )
+    await message.answer("ℹ️ Нет активных рассылок.")
 
 
 @router.message(F.text == "🚀 Запустить рассылку")
 async def start_broadcast(message: Message, state: FSMContext):
   if ACTIVE_BROADCAST["is_running"]:
-    await message.answer("⚠️ Рассылка уже выполняется! Сначала останови её.")
+    await message.answer("⚠️ Рассылка уже выполняется!")
     return
+  if not userbot.is_connected():
+    await message.answer("⚠️ Сначала подключите аккаунт кнопкой «📱 Подключить аккаунт» или командой `/connect`!")
+    return
+  try:
+    if not await userbot.is_user_authorized():
+      await message.answer("⚠️ Аккаунт не авторизован. Выполните подключение заново.")
+      return
+  except Exception:
+    pass
+
   await state.set_state(BroadcastStates.waiting_for_message)
-  await message.answer(
-      "📝 Введи текст рассылки.\n"
-      "<i>Поддерживается сплайсинг рандомизации (`{Привет|Добрый день}`) и форматирование.</i>"
-  )
+  await message.answer("📝 Введите текст рассылки (поддерживается сплайсинг `{Привет|Здорово}`):")
 
 
 @router.message(BroadcastStates.waiting_for_message)
-async def get_message_text(message: Message, state: FSMContext):
+async def get_text(message: Message, state: FSMContext):
   await state.update_data(text=message.text)
   await state.set_state(BroadcastStates.waiting_for_targets)
-  await message.answer(
-      "👥 Отправь список получателей (каждый юзернейм или ID с новой строки):"
-  )
+  await message.answer("👥 Отправьте список получателей (каждый юзернейм или ID с новой строки):")
 
 
 @router.message(BroadcastStates.waiting_for_targets)
-async def execute_ultra_broadcast(message: Message, state: FSMContext):
+async def execute_broadcast(message: Message, state: FSMContext):
   data = await state.get_data()
   raw_text = data.get("text")
   targets = [t.strip() for t in message.text.split("\n") if t.strip()]
@@ -380,7 +426,6 @@ async def execute_ultra_broadcast(message: Message, state: FSMContext):
 
   ACTIVE_BROADCAST["is_running"] = True
 
-  # Загружаем настройки из БД
   async with aiosqlite.connect(DB_NAME) as db:
     async with db.execute("SELECT key, value FROM settings") as cursor:
       st = {row[0]: row[1] for row in (await cursor.fetchall())}
@@ -391,15 +436,12 @@ async def execute_ultra_broadcast(message: Message, state: FSMContext):
   delay_max = int(st.get("delay_max", 15))
   batch_size = int(st.get("batch_size", 20))
   batch_pause = int(st.get("batch_pause", 60))
-  parse_mode_val = st.get("parse_mode", "html")
-  parse_mode = None if parse_mode_val == "off" else parse_mode_val
+  pm_val = st.get("parse_mode", "html")
+  parse_mode = None if pm_val == "off" else pm_val
   typing_on = st.get("typing_action", "1") == "1"
 
   status_msg = await message.answer(
-      f"🚀 **Ультрарассылка запущена!**\n"
-      f"• Всего получателей: {len(targets)}\n"
-      f"• Пакетный лимит: каждые {batch_size} шт. пауза {batch_pause}с\n"
-      f"• Статус: Выполняется..."
+      f"🚀 Рассылка запущена!\nПолучателей: {len(targets)}\nПачка: каждые {batch_size} шт. пауза {batch_pause}с."
   )
 
   success = 0
@@ -409,23 +451,21 @@ async def execute_ultra_broadcast(message: Message, state: FSMContext):
 
   for target in targets:
     if not ACTIVE_BROADCAST["is_running"]:
-      await status_msg.edit_text("🛑 Рассылка была экстренно остановлена пользователем!")
+      await status_msg.edit_text("🛑 Рассылка остановлена пользователем.")
       break
 
     if target in blacklist:
       skipped += 1
       continue
 
-    # Рандомизация текста для каждого нового адресата
     current_text = spin_text(raw_text)
     current_delay = random.randint(delay_min, delay_max)
 
     try:
-      # Имитация ввода текста (если включено)
       if typing_on:
         try:
           async with userbot.action(target, "typing"):
-            await asyncio.sleep(random.uniform(1.2, 2.5))
+            await asyncio.sleep(random.uniform(1.0, 2.0))
         except Exception:
           pass
 
@@ -433,16 +473,12 @@ async def execute_ultra_broadcast(message: Message, state: FSMContext):
       success += 1
       counter += 1
 
-      # Проверка пачки сообщений
       if counter % batch_size == 0 and counter < len(targets):
-        logger.info(
-            f"Пачка из {batch_size} сообщений отправлена. Перерыв {batch_pause} секунд..."
-        )
         await asyncio.sleep(batch_pause)
       else:
         await asyncio.sleep(current_delay)
 
-    errors.FloodWaitError as e:
+    except errors.FloodWaitError as e:
       logger.warning(f"FloodWait! Спим {e.seconds} секунд...")
       await asyncio.sleep(e.seconds)
       try:
@@ -456,9 +492,9 @@ async def execute_ultra_broadcast(message: Message, state: FSMContext):
 
   ACTIVE_BROADCAST["is_running"] = False
   await status_msg.edit_text(
-      f"📊 **Итоги ультрагибкой рассылки:**\n\n"
-      f"✅ Успешно доставлено: <b>{success}</b>\n"
-      f"❌ Ошибок отправки: <b>{fail}</b>\n"
+      f"📊 **Итоги рассылки:**\n\n"
+      f"✅ Успешно: <b>{success}</b>\n"
+      f"❌ Ошибок: <b>{fail}</b>\n"
       f"🚫 Пропущено по ЧС: <b>{skipped}</b>",
       reply_markup=main_menu_kb(),
   )
@@ -466,8 +502,11 @@ async def execute_ultra_broadcast(message: Message, state: FSMContext):
 
 async def main():
   await init_db()
-  await userbot.start()
-  logger.info("Ультрагибкий юзербот успешно запущен.")
+  # Пытаемся подключить клиент без блокировки, если сессия уже есть
+  try:
+    await userbot.connect()
+  except Exception:
+    pass
 
   dp = Dispatcher()
   dp.include_router(router)
@@ -480,4 +519,4 @@ if __name__ == "__main__":
   try:
     asyncio.run(main())
   except (KeyboardInterrupt, SystemExit):
-    logger.info("Бот выключен.")
+    logger.info("Бот остановлен.")
