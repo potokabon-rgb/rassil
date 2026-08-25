@@ -17,12 +17,11 @@ from aiogram.types import (
 )
 from telethon import TelegramClient, errors
 
-# Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - [%(levelname)s] - %(message)s",
 )
-logger = logging.getLogger("CommandRassilBot")
+logger = logging.getLogger("FixedAuthRassilBot")
 
 BOT_TOKEN = "8954398769:AAFn2uMSdK_YBMZwIHboSdwfcj43Z0zXHDk"
 API_ID = 30774866
@@ -37,7 +36,6 @@ userbot = TelegramClient(SESSION_NAME, API_ID, API_HASH)
 ACTIVE_BROADCAST = {"is_running": False}
 
 
-# --- БД И НАСТРОЙКИ ---
 async def init_db():
   async with aiosqlite.connect(DB_NAME) as db:
     await db.execute("""
@@ -66,7 +64,6 @@ async def init_db():
     await db.commit()
 
 
-# --- FSM СОСТОЯНИЯ ---
 class BroadcastStates(StatesGroup):
   waiting_for_message = State()
   waiting_for_targets = State()
@@ -83,7 +80,6 @@ class BlacklistStates(StatesGroup):
   waiting_for_remove = State()
 
 
-# --- РАНДОМИЗАЦИЯ ТЕКСТА ---
 def spin_text(text: str) -> str:
   import re
 
@@ -96,7 +92,6 @@ def spin_text(text: str) -> str:
   return text
 
 
-# --- КЛАВИАТУРЫ ---
 def main_menu_kb():
   return ReplyKeyboardMarkup(
       keyboard=[
@@ -117,13 +112,11 @@ def main_menu_kb():
   )
 
 
-# --- СТАРТ И МЕНЮ ---
 @router.message(CommandStart())
 async def cmd_start(message: Message):
   await message.answer(
       f"Привет, {html.bold(message.from_user.full_name)}!\n"
-      "🤖 Профессиональная система авто-рассылки активирована.\n"
-      "Управляйте настройками через команды в чате или кнопки ниже.",
+      "🤖 Профессиональная система авто-рассылки активирована.",
       reply_markup=main_menu_kb(),
   )
 
@@ -131,29 +124,29 @@ async def cmd_start(message: Message):
 @router.message(F.text == "📋 Список команд")
 async def cmd_list_help(message: Message):
   await message.answer(
-      "📋 <b>СПИСОК ВСЕХ КОМАНД УПРАВЛЕНИЯ РАССЫЛКОЙ:</b>\n\n"
-      "🔹 <code>/set_delay_min [сек]</code> — Установить минимальную паузу\n"
-      "🔹 <code>/set_delay_max [сек]</code> — Установить максимальную паузу\n"
-      "🔹 <code>/set_batch_size [число]</code> — Размер пачки сообщений\n"
-      "🔹 <code>/set_batch_pause [сек]</code> — Пауза после отправки пачки\n"
-      "🔹 <code>/set_parse [html/markdown/off]</code> — Режим форматирования\n"
-      "🔹 <code>/set_typing [1/0]</code> — Имитация набора текста\n"
-      "🔹 <code>/settings</code> — Посмотреть текущие настройки\n"
-      "🔹 <code>/connect</code> — Подключить аккаунт (ввод телефона/кода)\n"
-      "🔹 <code>/blacklist</code> — Показать черный список\n"
-      "🔹 <code>/stop</code> — Экстренно остановить рассылку",
+      "📋 <b>СПИСОК ВСЕХ КОМАНД УПРАВЛЕНИЯ:</b>\n\n"
+      "🔹 <code>/set_delay_min [сек]</code> — Мин. пауза\n"
+      "🔹 <code>/set_delay_max [сек]</code> — Макс. пауза\n"
+      "🔹 <code>/set_batch_size [число]</code> — Размер пачки\n"
+      "🔹 <code>/set_batch_pause [сек]</code> — Пауза пачки\n"
+      "🔹 <code>/set_parse [html/markdown/off]</code> — Формат\n"
+      "🔹 <code>/set_typing [1/0]</code> — Имитация набора\n"
+      "🔹 <code>/settings</code> — Текущие настройки\n"
+      "🔹 <code>/connect</code> — Подключить аккаунт\n"
+      "🔹 <code>/blacklist</code> — Чёрный список\n"
+      "🔹 <code>/stop</code> — Остановить рассылку",
       reply_markup=main_menu_kb(),
   )
 
 
-# --- АВТОРИЗАЦИЯ АККАУНТА («ПОДКЛЮЧИТЬ») ---
+# --- ИСПРАВЛЕННАЯ АВТОРИЗАЦИЯ ---
 @router.message(F.text == "📱 Подключить аккаунт")
 @router.message(Command("connect"))
 async def start_auth(message: Message, state: FSMContext):
   if userbot.is_connected():
     try:
-      me = await userbot.get_me()
-      if me:
+      if await userbot.is_user_authorized():
+        me = await userbot.get_me()
         await message.answer(
             f"ℹ️ Аккаунт уже подключен:\n👤 <b>{me.first_name}</b> (@{me.username})"
         )
@@ -174,6 +167,8 @@ async def process_phone(message: Message, state: FSMContext):
   try:
     if not userbot.is_connected():
       await userbot.connect()
+
+    # Запрос кода с обработкой сессии
     result = await userbot.send_code_request(phone)
     await state.update_data(phone_code_hash=result.phone_code_hash)
     await state.set_state(AuthStates.waiting_for_code)
@@ -193,7 +188,9 @@ async def process_code(message: Message, state: FSMContext):
   phone_code_hash = data.get("phone_code_hash")
 
   try:
-    await userbot.sign_in(phone=phone, code=code, phone_code_hash=phone_code_hash)
+    await userbot.sign_in(
+        phone=phone, code=code, phone_code_hash=phone_code_hash
+    )
     await state.clear()
     me = await userbot.get_me()
     await message.answer(
@@ -207,7 +204,9 @@ async def process_code(message: Message, state: FSMContext):
     )
   except Exception as e:
     await state.clear()
-    await message.answer(f"❌ Ошибка входа: {e}")
+    await message.answer(
+        f"❌ Ошибка входа: {e}\n(Возможно, код устарел. Нажмите «Подключить аккаунт» заново)."
+    )
 
 
 @router.message(AuthStates.waiting_for_password)
@@ -226,7 +225,7 @@ async def process_password(message: Message, state: FSMContext):
     await message.answer(f"❌ Ошибка ввода пароля: {e}")
 
 
-# --- КОМАНДЫ НАСТРОЙКИ В ЧАТЕ ---
+# --- КОМАНДЫ НАСТРОЙКИ ---
 @router.message(Command("settings"))
 @router.message(F.text == "⚙️ Статус настроек")
 async def cmd_show_settings(message: Message):
@@ -236,12 +235,12 @@ async def cmd_show_settings(message: Message):
 
   await message.answer(
       f"⚙️ <b>Текущие настройки рассылки:</b>\n\n"
-      f"⏱ Мин. пауза: <code>{st.get('delay_min')} сек.</code> (`/set_delay_min`)\n"
-      f"⏱ Макс. пауза: <code>{st.get('delay_max')} сек.</code> (`/set_delay_max`)\n"
-      f"📦 Размер пачки: <code>{st.get('batch_size')} шт.</code> (`/set_batch_size`)\n"
-      f"☕️ Пауза пачки: <code>{st.get('batch_pause')} сек.</code> (`/set_batch_pause`)\n"
-      f"📝 Формат текста: <code>{st.get('parse_mode').upper()}</code> (`/set_parse`)\n"
-      f"✍️ Имитация ввода: <code>{'Вкл' if st.get('typing_action') == '1' else 'Выкл'}</code> (`/set_typing`)",
+      f"⏱ Мин. пауза: <code>{st.get('delay_min')} сек.</code>\n"
+      f"⏱ Макс. пауза: <code>{st.get('delay_max')} сек.</code>\n"
+      f"📦 Размер пачки: <code>{st.get('batch_size')} шт.</code>\n"
+      f"☕️ Пауза пачки: <code>{st.get('batch_pause')} сек.</code>\n"
+      f"📝 Формат текста: <code>{st.get('parse_mode').upper()}</code>\n"
+      f"✍️ Имитация ввода: <code>{'Вкл' if st.get('typing_action') == '1' else 'Выкл'}</code>",
       reply_markup=main_menu_kb(),
   )
 
@@ -250,71 +249,63 @@ async def cmd_show_settings(message: Message):
 async def cmd_set_delay_min(message: Message):
   args = message.text.split()
   if len(args) < 2 or not args[1].isdigit():
-    await message.answer(
-        "❌ Использование: <code>/set_delay_min 5</code> (укажите секунды)"
-    )
+    await message.answer("❌ Использование: <code>/set_delay_min 5</code>")
     return
   async with aiosqlite.connect(DB_NAME) as db:
     await db.execute(
         "UPDATE settings SET value = ? WHERE key = 'delay_min'", (args[1],)
     )
     await db.commit()
-  await message.answer(f"✅ Минимальная задержка изменена на {args[1]} сек.")
+  await message.answer(f"✅ Мин. задержка: {args[1]} сек.")
 
 
 @router.message(Command("set_delay_max"))
 async def cmd_set_delay_max(message: Message):
   args = message.text.split()
   if len(args) < 2 or not args[1].isdigit():
-    await message.answer(
-        "❌ Использование: <code>/set_delay_max 15</code> (укажите секунды)"
-    )
+    await message.answer("❌ Использование: <code>/set_delay_max 15</code>")
     return
   async with aiosqlite.connect(DB_NAME) as db:
     await db.execute(
         "UPDATE settings SET value = ? WHERE key = 'delay_max'", (args[1],)
     )
     await db.commit()
-  await message.answer(f"✅ Максимальная задержка изменена на {args[1]} сек.")
+  await message.answer(f"✅ Макс. задержка: {args[1]} сек.")
 
 
 @router.message(Command("set_batch_size"))
 async def cmd_set_batch_size(message: Message):
   args = message.text.split()
   if len(args) < 2 or not args[1].isdigit():
-    await message.answer(
-        "❌ Использование: <code>/set_batch_size 25</code> (количество)"
-    )
+    await message.answer("❌ Использование: <code>/set_batch_size 20</code>")
     return
   async with aiosqlite.connect(DB_NAME) as db:
     await db.execute(
         "UPDATE settings SET value = ? WHERE key = 'batch_size'", (args[1],)
     )
     await db.commit()
-  await message.answer(f"✅ Размер пачки изменен на {args[1]} сообщений.")
+  await message.answer(f"✅ Размер пачки: {args[1]} шт.")
 
 
 @router.message(Command("set_batch_pause"))
 async def cmd_set_batch_pause(message: Message):
   args = message.text.split()
   if len(args) < 2 or not args[1].isdigit():
-    await message.answer(
-        "❌ Использование: <code>/set_batch_pause 60</code> (секунды)"
-    )
+    await message.answer("❌ Использование: <code>/set_batch_pause 60</code>")
     return
   async with aiosqlite.connect(DB_NAME) as db:
     await db.execute(
         "UPDATE settings SET value = ? WHERE key = 'batch_pause'", (args[1],)
     )
     await db.commit()
-  await message.answer(f"✅ Пауза после пачки изменена на {args[1]} сек.")
+  await message.answer(f"✅ Пауза пачки: {args[1]} сек.")
 
 
 @router.message(Command("set_parse"))
 async def cmd_set_parse(message: Message):
   args = message.text.split()
   if len(args) < 2 or args[1].lower() not in ["html", "markdown", "off"]:
-    await message.answer("❌ Использование: <code>/set_parse html</code> (html / markdown / off)")
+    await message.answer("❌ Использование: <code>/set_parse html</code>")
     return
   mode = args[1].lower()
   async with aiosqlite.connect(DB_NAME) as db:
@@ -322,21 +313,21 @@ async def cmd_set_parse(message: Message):
         "UPDATE settings SET value = ? WHERE key = 'parse_mode'", (mode,)
     )
     await db.commit()
-  await message.answer(f"✅ Режим форматирования изменен на: {mode.upper()}")
+  await message.answer(f"✅ Реформат: {mode.upper()}")
 
 
 @router.message(Command("set_typing"))
 async def cmd_set_typing(message: Message):
   args = message.text.split()
   if len(args) < 2 or args[1] not in ["1", "0"]:
-    await message.answer("❌ Использование: <code>/set_typing 1</code> (1 - вкл, 0 - выкл)")
+    await message.answer("❌ Использование: <code>/set_typing 1</code>")
     return
   async with aiosqlite.connect(DB_NAME) as db:
     await db.execute(
         "UPDATE settings SET value = ? WHERE key = 'typing_action'", (args[1],)
     )
     await db.commit()
-  await message.answer(f"✅ Имитация набора текста установлена в статус: {args[1]}")
+  await message.answer(f"✅ Имитация ввода: {args[1]}")
 
 
 # --- ЧЕРНЫЙ СПИСОК ---
@@ -348,7 +339,7 @@ async def show_blacklist(message: Message):
       rows = await cursor.fetchall()
   bl = ", ".join([r[0] for r in rows]) if rows else "Пусто"
   await message.answer(
-      f"🚫 <b>Черный список исключений:</b>\n{bl}\n\nДобавить: <code>/bl_add [username]</code>\nУдалить: <code>/bl_remove [username]</code>"
+      f"🚫 <b>Черный список:</b>\n{bl}\n\nДобавить: <code>/bl_add [юзернейм]</code>\nУдалить: <code>/bl_remove [юзернейм]</code>"
   )
 
 
@@ -364,7 +355,7 @@ async def cmd_bl_add(message: Message):
         "INSERT OR IGNORE INTO blacklist (target) VALUES (?)", (target,)
     )
     await db.commit()
-  await message.answer(f"✅ Пользователь <code>{target}</code> добавлен в ЧС.")
+  await message.answer(f"✅ <code>{target}</code> добавлен в ЧС.")
 
 
 @router.message(Command("bl_remove"))
@@ -377,7 +368,7 @@ async def cmd_bl_remove(message: Message):
   async with aiosqlite.connect(DB_NAME) as db:
     await db.execute("DELETE FROM blacklist WHERE target = ?", (target,))
     await db.commit()
-  await message.answer(f"✅ Пользователь <code>{target}</code> удален из ЧС.")
+  await message.answer(f"✅ <code>{target}</code> удален из ЧС.")
 
 
 # --- РАССЫЛКА ---
@@ -396,15 +387,11 @@ async def start_broadcast(message: Message, state: FSMContext):
   if ACTIVE_BROADCAST["is_running"]:
     await message.answer("⚠️ Рассылка уже выполняется!")
     return
-  if not userbot.is_connected():
-    await message.answer("⚠️ Сначала подключите аккаунт кнопкой «📱 Подключить аккаунт» или командой `/connect`!")
+  if not userbot.is_connected() or not await userbot.is_user_authorized():
+    await message.answer(
+        "⚠️ Сначала подключите и авторизуйте аккаунт через кнопку «📱 Подключить аккаунт»!"
+    )
     return
-  try:
-    if not await userbot.is_user_authorized():
-      await message.answer("⚠️ Аккаунт не авторизован. Выполните подключение заново.")
-      return
-  except Exception:
-    pass
 
   await state.set_state(BroadcastStates.waiting_for_message)
   await message.answer("📝 Введите текст рассылки (поддерживается сплайсинг `{Привет|Здорово}`):")
@@ -441,7 +428,7 @@ async def execute_broadcast(message: Message, state: FSMContext):
   typing_on = st.get("typing_action", "1") == "1"
 
   status_msg = await message.answer(
-      f"🚀 Рассылка запущена!\nПолучателей: {len(targets)}\nПачка: каждые {batch_size} шт. пауза {batch_pause}с."
+      f"🚀 Рассылка запущена!\nПолучателей: {len(targets)}"
   )
 
   success = 0
@@ -451,7 +438,7 @@ async def execute_broadcast(message: Message, state: FSMContext):
 
   for target in targets:
     if not ACTIVE_BROADCAST["is_running"]:
-      await status_msg.edit_text("🛑 Рассылка остановлена пользователем.")
+      await status_msg.edit_text("🛑 Рассылка остановлена.")
       break
 
     if target in blacklist:
@@ -502,7 +489,6 @@ async def execute_broadcast(message: Message, state: FSMContext):
 
 async def main():
   await init_db()
-  # Пытаемся подключить клиент без блокировки, если сессия уже есть
   try:
     await userbot.connect()
   except Exception:
